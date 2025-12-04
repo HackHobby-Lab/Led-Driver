@@ -59,10 +59,10 @@ void Error_Handler(void);
 /* USER CODE END EFP */
 
 /* Private defines -----------------------------------------------------------*/
-#define Button_Pin GPIO_PIN_2
-#define Button_GPIO_Port GPIOF
-#define Led_Pin GPIO_PIN_2
-#define Led_GPIO_Port GPIOA
+#define Button_Pin GPIO_PIN_0
+#define Button_GPIO_Port GPIOA
+#define Led_Pin GPIO_PIN_8
+#define Led_GPIO_Port GPIOB
 #define Joystick_Pin GPIO_PIN_8
 #define Joystick_GPIO_Port GPIOA
 

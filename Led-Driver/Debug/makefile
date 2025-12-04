@@ -60,8 +60,8 @@ all: main-build
 main-build: Led-Driver.elf secondary-outputs
 
 # Tool invocations
-Led-Driver.elf Led-Driver.map: $(OBJS) $(USER_OBJS) C:\Users\AWAN\STM32CubeIDE\workspace_1.19.0\Led-Driver\STM32C011F6UX_FLASH.ld makefile objects.list $(OPTIONAL_TOOL_DEPS)
-	arm-none-eabi-gcc -o "Led-Driver.elf" @"objects.list" $(USER_OBJS) $(LIBS) -mcpu=cortex-m0plus -T"C:\Users\AWAN\STM32CubeIDE\workspace_1.19.0\Led-Driver\STM32C011F6UX_FLASH.ld" --specs=nosys.specs -Wl,-Map="Led-Driver.map" -Wl,--gc-sections -static --specs=nano.specs -mfloat-abi=soft -mthumb -Wl,--start-group -lc -lm -Wl,--end-group
+Led-Driver.elf Led-Driver.map: $(OBJS) $(USER_OBJS) E:\CH32-RISCV\Led-Driver\Led-Driver\STM32C011F6UX_FLASH.ld makefile objects.list $(OPTIONAL_TOOL_DEPS)
+	arm-none-eabi-gcc -o "Led-Driver.elf" @"objects.list" $(USER_OBJS) $(LIBS) -mcpu=cortex-m0plus -T"E:\CH32-RISCV\Led-Driver\Led-Driver\STM32C011F6UX_FLASH.ld" --specs=nosys.specs -Wl,-Map="Led-Driver.map" -Wl,--gc-sections -static --specs=nano.specs -mfloat-abi=soft -mthumb -Wl,--start-group -lc -lm -Wl,--end-group
 	@echo 'Finished building target: $@'
 	@echo ' '
 
