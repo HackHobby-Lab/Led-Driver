@@ -39,7 +39,15 @@ uint32_t button_press_time = 0;
 uint8_t ramp_direction = 1;          // 1=ramp up, 0=ramp down
 uint8_t at_extreme = 0;   // 1 = reached MAX or MIN and must stop until released
 
+uint8_t hold_started = 0;        // becomes 1 once the press is recognized as a hold
+
+/* compute min ramp brightness after TIM started */
+uint32_t ARR = 0;
+
+
 uint32_t last_brightness = 0; // Stores brightness to restore on next click
+uint32_t min_ramp_brightness = 0;   // 0.5% duty (50/9999)
+
 
 
 #define CLICK_TIME_MS 300            // Max time for a click (not hold)
@@ -72,41 +80,46 @@ int main(void)
 
     uint32_t current_time = 0;
     last_brightness = 2999;
+    /* after HAL_TIM_PWM_Start(&htim3, TIM_CHANNEL_1); */
+    ARR = __HAL_TIM_GET_AUTORELOAD(&htim3);          // should be 9999
+    min_ramp_brightness = (ARR + 1) * 50 / 1000;   // 5% of ARR
+//    if (min_ramp_brightness == 0) min_ramp_brightness = 1; // safety
+
     while (1)
     {
-        current_time = HAL_GetTick();
+        uint32_t now = HAL_GetTick();
+        GPIO_PinState bs = HAL_GPIO_ReadPin(Button_GPIO_Port, Button_Pin);
 
-        GPIO_PinState button_state = HAL_GPIO_ReadPin(Button_GPIO_Port, Button_Pin);
-
-        /* Button pressed */
-        if (button_state == GPIO_PIN_RESET && !button_pressed)
+        /* --- BUTTON PRESSED (edge) --- */
+        if (bs == GPIO_PIN_RESET && !button_pressed)
         {
             button_pressed = 1;
-            button_press_time = current_time;
-
-            // Do NOT reset extreme here; extreme should only reset on release
+            button_press_time = now;
+            hold_started = 0;    // will become 1 once hold threshold passed
+            // do NOT flip direction here; flip when hold actually starts
             uart_print("Button PRESSED\r\n");
         }
 
-        /* Button released */
-        else if (button_state == GPIO_PIN_SET && button_pressed)
+        /* --- BUTTON RELEASED (edge) --- */
+        if (bs == GPIO_PIN_SET && button_pressed)
         {
+            uint32_t press_duration = now - button_press_time;
             button_pressed = 0;
-            uint32_t press_duration = current_time - button_press_time;
 
-            // Release --> allow ramp again
+            // Release clears the at_extreme so next hold can ramp again
             at_extreme = 0;
+            hold_started = 0;
 
             sprintf(msg, "Button RELEASED (%lums)\r\n", press_duration);
             uart_print(msg);
 
             if (press_duration < CLICK_TIME_MS)
             {
-                // Toggle ON/OFF with fade
+                // short click -> toggle ON/OFF with fade
                 if (is_on)
                 {
                     uart_print(">> CLICK: Fading OFF\r\n");
-                    last_brightness = current_brightness;  // Save current level
+                    last_brightness = current_brightness;
                     smooth_fade_to(0);
                     current_brightness = 0;
                     is_on = 0;
@@ -114,73 +127,91 @@ int main(void)
                 else
                 {
                     uart_print(">> CLICK: Fading ON\r\n");
-                    // Fade back to the last saved brightness
                     smooth_fade_to(last_brightness);
                     current_brightness = last_brightness;
                     is_on = 1;
                 }
             }
-
             else
             {
-                // HOLD → set next direction
-                if (current_brightness >= max_brightness)
-                    ramp_direction = 0;
-                else if (current_brightness == 0)
-                    ramp_direction = 1;
+                // long press ended — nothing else at release (we flip direction when the hold actually started)
+                // do not flip here
             }
         }
 
-        /* Button held */
-        else if (button_pressed)
+        /* --- BUTTON HELD (after crossing CLICK_TIME_MS) --- */
+        if (button_pressed && !hold_started)
         {
-            uint32_t hold_duration = current_time - button_press_time;
-
-            if (hold_duration > CLICK_TIME_MS)
+            if ((now - button_press_time) > CLICK_TIME_MS)
             {
-                // If reached min/max, ignore holds until release
-                if (at_extreme)
-                    continue;
+                hold_started = 1;
 
-                // RAMP UP
-                if (ramp_direction == 1)
+                // FIX: determine correct direction (no wrong first-time flip)
+                if (current_brightness <= min_ramp_brightness)
                 {
-                    current_brightness += 100;
-
-                    if (current_brightness >= max_brightness)
-                    {
-                        current_brightness = max_brightness;
-                        at_extreme = 1;     // STOP ramping
-                        ramp_direction = 0; // Next time ramp down
-                        uart_print(">> HOLD: MAX reached, stop until release\r\n");
-                    }
+                    ramp_direction = 1;  // force ramp UP
                 }
-                // RAMP DOWN
+                else if (current_brightness >= max_brightness)
+                {
+                    ramp_direction = 0;  // force ramp DOWN
+                }
                 else
                 {
-                    if (current_brightness > 100)
-                        current_brightness -= 100;
-                    else
-                        current_brightness = 0;
-
-                    if (current_brightness == 0)
-                    {
-                        at_extreme = 1;    // STOP ramping
-                        ramp_direction = 1; // Next time ramp up
-                        uart_print(">> HOLD: MIN reached, stop until release\r\n");
-                    }
+                    ramp_direction ^= 1; // normal toggle
                 }
 
-                target_brightness = current_brightness;
-                last_brightness = target_brightness;
-                __HAL_TIM_SET_COMPARE(&htim3, TIM_CHANNEL_1, current_brightness);
-                HAL_Delay(10);
+                sprintf(msg, ">> HOLD started, direction now %s\r\n",
+                        ramp_direction ? "UP" : "DOWN");
+                uart_print(msg);
             }
         }
 
+        /* --- If hold is active and not at extreme, perform ramping --- */
+        if (hold_started && !at_extreme)
+        {
+            if (ramp_direction == 1) // ramp UP
+            {
+                // increase by step
+                uint32_t step = 100; // tune step size for speed
+                if (current_brightness + step >= max_brightness)
+                {
+                    current_brightness = max_brightness;
+                    at_extreme = 1;
+                    // prepare next direction for the next hold
+                    // but do NOT flip now — flipping occurs at next hold start
+                    uart_print(">> HOLD: MAX reached, stop until release\r\n");
+                }
+                else
+                {
+                    current_brightness += step;
+                }
+            }
+            else // ramp DOWN
+            {
+                uint32_t step = 100;
+                if (current_brightness <= min_ramp_brightness + step)
+                {
+                    current_brightness = min_ramp_brightness;
+                    at_extreme = 1;
+                    uart_print(">> HOLD: MIN reached (0.5%), stop until release\r\n");
+                }
+                else
+                {
+                    current_brightness -= step;
+                }
+            }
 
-        HAL_Delay(5);
+            // apply to timer and remember
+            target_brightness = current_brightness;
+            last_brightness = current_brightness;
+            __HAL_TIM_SET_COMPARE(&htim3, TIM_CHANNEL_1, current_brightness);
+
+            HAL_Delay(10); // ramp speed (tune as needed)
+        }
+
+        HAL_Delay(5); // small loop delay for debounce and cpu relief
     }
+
 }
 
 void smooth_fade_to(uint32_t target)
