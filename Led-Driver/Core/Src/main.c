@@ -1,8 +1,8 @@
-/* Simple LED Controller with Smooth Fade */
+/* Simple LED Controller with Smooth Fade and Lockout Mode - FIXED RAMP DIP */
 /**
   ******************************************************************************
   * @file           : main.c
-  * @brief          : Simple click ON/OFF with fade, hold to ramp up/down
+  * @brief          : Instant single click ON/OFF, hold to ramp, 4C lockout with momentary
   ******************************************************************************
   */
 #include "main.h"
@@ -27,32 +27,45 @@ static void MX_TIM3_Init(void);
 void delay(int x);
 void uart_print(const char* str);
 void smooth_fade_to(uint32_t target_brightness);
+void handle_click_sequence(uint8_t click_count);
 
 /* Global variables */
 uint8_t is_on = 0;                   // LED state: 0=OFF, 1=ON
+uint8_t is_locked = 0;               // Lockout mode: 0=normal, 1=locked
 uint32_t current_brightness = 0;     // Current brightness level
-uint32_t target_brightness = 2999;  // Target brightness when ON (30%)
-uint32_t max_brightness = 9999;     // Maximum brightness (100%)
+uint32_t target_brightness = 2999;   // Target brightness when ON (30%)
+uint32_t max_brightness = 9999;      // Maximum brightness (100%)
 
 uint8_t button_pressed = 0;
 uint32_t button_press_time = 0;
 uint8_t ramp_direction = 1;          // 1=ramp up, 0=ramp down
-uint8_t at_extreme = 0;   // 1 = reached MAX or MIN and must stop until released
+uint8_t at_extreme = 0;              // 1 = reached MAX or MIN
 
-uint8_t hold_started = 0;        // becomes 1 once the press is recognized as a hold
+uint8_t hold_started = 0;            // becomes 1 once press is recognized as hold
+uint8_t press_handled = 0;           // becomes 1 after instant action on press
+uint8_t instant_action_done = 0;     // tracks if instant action was taken
+uint32_t brightness_at_press = 0;    // brightness when button was first pressed
 
-/* compute min ramp brightness after TIM started */
+/* Click detection */
+#define MAX_CLICKS 4
+//#define CLICK_TIMEOUT_MS 500         // Increased from 500ms for easier 4-click
+uint8_t click_count = 0;
+uint32_t last_click_time = 0;
+
+uint32_t last_brightness = 0;        // Stores brightness to restore
+uint32_t min_ramp_brightness = 0;    // 5% duty calculation
+uint32_t momentary_brightness = 0;   // 5% for momentary mode
 uint32_t ARR = 0;
 
+//#define CLICK_TIME_MS 150            // Max time for a click (not hold)
+//#define INSTANT_CLICK_MS 80         // INCREASED: Delay before instant action (was 50ms)
+//#define FADE_TIME_MS 200             // Fade in/out duration
+#define FADE_STEPS 10                // Number of steps in fade
 
-uint32_t last_brightness = 0; // Stores brightness to restore on next click
-uint32_t min_ramp_brightness = 0;   // 0.5% duty (50/9999)
-
-
-
-#define CLICK_TIME_MS 300            // Max time for a click (not hold)
-#define FADE_TIME_MS 500             // Fade in/out duration
-#define FADE_STEPS 50                // Number of steps in fade
+#define CLICK_TIME_MS 200            // Max time for a click (not hold)
+#define INSTANT_CLICK_MS 20          // Much faster response!
+#define CLICK_TIMEOUT_MS 450         // Time between clicks
+#define FADE_TIME_MS 150             // Faster fade
 
 int main(void)
 {
@@ -74,29 +87,36 @@ int main(void)
     HAL_TIM_PWM_Start(&htim3, TIM_CHANNEL_1);
 
     HAL_Delay(500);
-    uart_print("\r\n=== Simple LED Controller ===\r\n");
-    uart_print("Click: Smooth ON/OFF\r\n");
-    uart_print("Hold: Ramp UP/DOWN\r\n\r\n");
+    uart_print("\r\n=== LED Controller with Lockout (FIXED) ===\r\n");
+    uart_print("Click: ON/OFF | Hold: Ramp\r\n");
+    uart_print("4 Clicks: Lockout Mode\r\n\r\n");
 
-    uint32_t current_time = 0;
     last_brightness = 2999;
-    /* after HAL_TIM_PWM_Start(&htim3, TIM_CHANNEL_1); */
     ARR = __HAL_TIM_GET_AUTORELOAD(&htim3);          // should be 9999
-    min_ramp_brightness = (ARR + 1) * 50 / 1000;   // 5% of ARR
-//    if (min_ramp_brightness == 0) min_ramp_brightness = 1; // safety
+    min_ramp_brightness = (ARR + 1) * 50 / 1000;     // 5% of ARR
+    momentary_brightness = min_ramp_brightness;       // 5% for momentary
 
     while (1)
     {
         uint32_t now = HAL_GetTick();
         GPIO_PinState bs = HAL_GPIO_ReadPin(Button_GPIO_Port, Button_Pin);
 
+        /* Check for click timeout */
+        if (click_count > 0 && (now - last_click_time) > CLICK_TIMEOUT_MS)
+        {
+            handle_click_sequence(click_count);
+            click_count = 0;
+        }
+
         /* --- BUTTON PRESSED (edge) --- */
         if (bs == GPIO_PIN_RESET && !button_pressed)
         {
             button_pressed = 1;
             button_press_time = now;
-            hold_started = 0;    // will become 1 once hold threshold passed
-            // do NOT flip direction here; flip when hold actually starts
+            hold_started = 0;
+            press_handled = 0;
+            instant_action_done = 0;  // Reset instant action flag
+            brightness_at_press = current_brightness;  // Store brightness at press time
             uart_print("Button PRESSED\r\n");
         }
 
@@ -106,80 +126,137 @@ int main(void)
             uint32_t press_duration = now - button_press_time;
             button_pressed = 0;
 
-            // Release clears the at_extreme so next hold can ramp again
             at_extreme = 0;
             hold_started = 0;
 
-            sprintf(msg, "Button RELEASED (%lums)\r\n", press_duration);
-            uart_print(msg);
+//            sprintf(msg, "Button RELEASED (%lums)\r\n", press_duration);
+//            uart_print(msg);
 
             if (press_duration < CLICK_TIME_MS)
             {
-                // short click -> toggle ON/OFF with fade
-                if (is_on)
+                // Count as click for multi-click detection FIRST
+                click_count++;
+                last_click_time = now;
+
+                // SHORT PRESS - if instant action wasn't done, do it now
+                if (!instant_action_done && !is_locked)
                 {
-                    uart_print(">> CLICK: Fading OFF\r\n");
-                    last_brightness = current_brightness;
-                    smooth_fade_to(0);
-                    current_brightness = 0;
-                    is_on = 0;
-                }
-                else
-                {
-                    uart_print(">> CLICK: Fading ON\r\n");
-                    smooth_fade_to(last_brightness);
-                    current_brightness = last_brightness;
-                    is_on = 1;
+                    // Perform the toggle now on release
+                    if (is_on)
+                    {
+                        last_brightness = current_brightness;
+
+                        // Skip fade if we're in a multi-click sequence
+                        if (click_count == 1) {
+                            smooth_fade_to(0);
+                        } else {
+                            current_brightness = 0;
+                            __HAL_TIM_SET_COMPARE(&htim3, TIM_CHANNEL_1, 0);
+                        }
+                        is_on = 0;
+                    }
+                    else
+                    {
+                        // Skip fade if we're in a multi-click sequence
+                        if (click_count == 1) {
+                            smooth_fade_to(last_brightness);
+                        } else {
+                            current_brightness = last_brightness;
+                            __HAL_TIM_SET_COMPARE(&htim3, TIM_CHANNEL_1, last_brightness);
+                        }
+                        is_on = 1;
+                    }
                 }
             }
             else
             {
-                // long press ended — nothing else at release (we flip direction when the hold actually started)
-                // do not flip here
-            }
-        }
-
-        /* --- BUTTON HELD (after crossing CLICK_TIME_MS) --- */
-        if (button_pressed && !hold_started)
-        {
-            if ((now - button_press_time) > CLICK_TIME_MS)
-            {
-                hold_started = 1;
-
-                // FIX: determine correct direction (no wrong first-time flip)
-                if (current_brightness <= min_ramp_brightness)
+                // LONG PRESS released
+                if (is_locked)
                 {
-                    ramp_direction = 1;  // force ramp UP
-                }
-                else if (current_brightness >= max_brightness)
-                {
-                    ramp_direction = 0;  // force ramp DOWN
+                    // Turn off momentary light
+                    smooth_fade_to(0);
+                    current_brightness = 0;
+                    uart_print(">> Momentary OFF\r\n");
                 }
                 else
                 {
-                    ramp_direction ^= 1; // normal toggle
+                    // Update is_on state based on current brightness
+                    if (current_brightness > 0)
+                    {
+                        is_on = 1;
+                        last_brightness = current_brightness;
+                    }
+                    else
+                    {
+                        is_on = 0;
+                    }
+                    sprintf(msg, ">> Hold released: is_on=%d, brightness=%lu\r\n",
+                            is_on, current_brightness);
+                    uart_print(msg);
+                }
+                // Reset click counter after hold
+                click_count = 0;
+            }
+
+            press_handled = 0;
+            instant_action_done = 0;
+        }
+
+        /* --- BUTTON HELD (after crossing CLICK_TIME_MS) --- */
+        if (button_pressed && !hold_started && (now - button_press_time) > CLICK_TIME_MS)
+        {
+            hold_started = 1;
+            click_count = 0; // Clear clicks on hold
+
+            if (is_locked)
+            {
+                // Lockout: turn on momentary light at 5%
+                uart_print(">> LOCKOUT: Momentary ON (5%)\r\n");
+                smooth_fade_to(momentary_brightness);
+                current_brightness = momentary_brightness;
+            }
+            else
+            {
+                // Normal ramping mode - NO TOGGLE, just start ramping from current state
+                uart_print(">> HOLD mode activated - starting ramp\r\n");
+
+                // Determine ramp direction based on brightness at press time
+                if (brightness_at_press <= min_ramp_brightness)
+                {
+                    ramp_direction = 1;  // force ramp UP
+                    uart_print(">> At MIN - forcing ramp UP\r\n");
+                }
+                else if (brightness_at_press >= max_brightness)
+                {
+                    ramp_direction = 0;  // force ramp DOWN
+                    uart_print(">> At MAX - forcing ramp DOWN\r\n");
+                }
+                else
+                {
+                    // Toggle direction for middle brightness values
+                    ramp_direction ^= 1;
+                    sprintf(msg, ">> Toggling ramp direction to %s\r\n",
+                            ramp_direction ? "UP" : "DOWN");
+                    uart_print(msg);
                 }
 
-                sprintf(msg, ">> HOLD started, direction now %s\r\n",
-                        ramp_direction ? "UP" : "DOWN");
+                sprintf(msg, ">> HOLD started from %lu, direction: %s\r\n",
+                        current_brightness, ramp_direction ? "UP" : "DOWN");
                 uart_print(msg);
             }
         }
 
-        /* --- If hold is active and not at extreme, perform ramping --- */
-        if (hold_started && !at_extreme)
+        /* --- Perform ramping if hold is active (not in lockout) --- */
+        if (hold_started && !at_extreme && !is_locked)
         {
             if (ramp_direction == 1) // ramp UP
             {
-                // increase by step
-                uint32_t step = 100; // tune step size for speed
+                uint32_t step = 50;  // Reduced step size for smoother ramping
                 if (current_brightness + step >= max_brightness)
                 {
                     current_brightness = max_brightness;
                     at_extreme = 1;
-                    // prepare next direction for the next hold
-                    // but do NOT flip now — flipping occurs at next hold start
-                    uart_print(">> HOLD: MAX reached, stop until release\r\n");
+                    uart_print(">> HOLD: MAX reached\r\n");
                 }
                 else
                 {
@@ -188,12 +265,12 @@ int main(void)
             }
             else // ramp DOWN
             {
-                uint32_t step = 100;
+                uint32_t step = 50;  // Reduced step size for smoother ramping
                 if (current_brightness <= min_ramp_brightness + step)
                 {
                     current_brightness = min_ramp_brightness;
                     at_extreme = 1;
-                    uart_print(">> HOLD: MIN reached (0.5%), stop until release\r\n");
+                    uart_print(">> HOLD: MIN reached (5%)\r\n");
                 }
                 else
                 {
@@ -201,17 +278,77 @@ int main(void)
                 }
             }
 
-            // apply to timer and remember
             target_brightness = current_brightness;
             last_brightness = current_brightness;
             __HAL_TIM_SET_COMPARE(&htim3, TIM_CHANNEL_1, current_brightness);
 
-            HAL_Delay(10); // ramp speed (tune as needed)
+            // Slower ramp - 2 seconds from 5% to 100%
+            HAL_Delay(10);
         }
 
-        HAL_Delay(5); // small loop delay for debounce and cpu relief
+        HAL_Delay(1); // small loop delay
     }
+}
 
+void handle_click_sequence(uint8_t clicks)
+{
+    char msg[100];
+    sprintf(msg, ">> Processing %d click(s)\r\n", clicks);
+    uart_print(msg);
+
+    if (is_locked)
+    {
+        /* LOCKOUT MODE BEHAVIOR */
+        if (clicks == 4)
+        {
+            // 4 clicks: Exit lockout
+            is_locked = 0;
+            is_on = 0;  // Start in OFF state when exiting lockout
+            current_brightness = 0;
+            smooth_fade_to(0);
+            uart_print(">> UNLOCKED - Back to OFF\r\n");
+        }
+        else if (clicks == 3)
+        {
+            // 3 clicks: Battery check
+            uart_print(">> LOCKOUT: Battery Check\r\n");
+            // TODO: Add actual battery voltage reading here
+            uart_print("Battery: OK (placeholder)\r\n");
+        }
+        else
+        {
+            sprintf(msg, ">> LOCKOUT: %d click(s) - no action\r\n", clicks);
+            uart_print(msg);
+        }
+    }
+    else
+    {
+        /* NORMAL MODE BEHAVIOR */
+        if (clicks == 1)
+        {
+            // Single click was already handled instantly on press
+            sprintf(msg, ">> Single click already handled (is_on=%d)\r\n", is_on);
+            uart_print(msg);
+        }
+        else if (clicks == 4)
+        {
+            uart_print(">> ENTERING LOCKOUT MODE\r\n");
+
+            is_locked = 1;
+            is_on = 0;
+
+            // Fade to 0 when entering lockout
+            smooth_fade_to(0);
+            current_brightness = 0;
+
+            uart_print(">> Lockout active - brightness at 0\r\n");
+        }
+        else
+        {
+            sprintf(msg, ">> %d click(s) - no action assigned\r\n", clicks);
+            uart_print(msg);
+        }
+    }
 }
 
 void smooth_fade_to(uint32_t target)
@@ -235,7 +372,7 @@ void smooth_fade_to(uint32_t target)
     __HAL_TIM_SET_COMPARE(&htim3, TIM_CHANNEL_1, current_brightness);
 
     sprintf(msg, "Fade complete at %lu (%.1f%%)\r\n",
-            current_brightness, (current_brightness * 100.0) / 48000.0);
+            current_brightness, (current_brightness * 100.0) / 9999.0);
     uart_print(msg);
 }
 
