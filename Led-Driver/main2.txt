@@ -23,7 +23,15 @@ UART_HandleTypeDef huart1;
 #define ADC_MAX       4095
 #define T0_KELVIN     298       // 25°C in Kelvin
 
+#define ADC_BATTERY_CHANNEL ADC_CHANNEL_9
+#define ADC_BATTERY_DIVIDER_NUM   20   // R1 + R2, e.g., 10k + 10k = 20
+#define ADC_BATTERY_DIVIDER_DENOM 10   // R2, e.g., 10k
+#define VREF_MV 3300                  // ADC reference in mV
 
+void display_battery_voltage(void);
+uint16_t read_battery_adc(void);
+uint16_t read_battery_mv(void);
+uint16_t read_battery_mv_avg(uint8_t samples);
 
 /* NTC Function Prototypes */
 int16_t read_ntc_temperature(void);
@@ -290,6 +298,7 @@ int main(void)
     	    if (HAL_GetTick() - last_temp_read > 500)  // Read every 2 seconds
     	      {
     	          display_ntc_temperature();
+    	          display_battery_voltage();
     	          last_temp_read = HAL_GetTick();
     	      }
 
@@ -631,6 +640,59 @@ uint8_t is_temperature_safe(int16_t max_temp_c)
 }
 
 
+uint16_t read_battery_adc(void)
+{
+    ADC_ChannelConfTypeDef sConfig = {0};
+    uint16_t adc_value = 0;
+
+    sConfig.Channel = ADC_BATTERY_CHANNEL;
+    sConfig.Rank = ADC_RANK_CHANNEL_NUMBER;
+    if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK) { Error_Handler(); }
+
+    if (HAL_ADC_Start(&hadc1) == HAL_OK)
+    {
+        if (HAL_ADC_PollForConversion(&hadc1, 100) == HAL_OK)
+        {
+            adc_value = HAL_ADC_GetValue(&hadc1);
+        }
+        HAL_ADC_Stop(&hadc1);
+    }
+
+    return adc_value;
+}
+
+
+uint16_t read_battery_mv(void)
+{
+    uint16_t adc = read_battery_adc();
+    uint32_t v_adc = (uint32_t)adc * VREF_MV / ADC_MAX;          // mV at ADC pin
+    uint32_t v_bat = v_adc * ADC_BATTERY_DIVIDER_NUM / ADC_BATTERY_DIVIDER_DENOM;
+    return (uint16_t)v_bat;  // battery voltage in mV
+}
+
+uint16_t read_battery_mv_avg(uint8_t samples)
+{
+    uint32_t sum = 0;
+    for (uint8_t i = 0; i < samples; i++)
+    {
+        sum += read_battery_adc();
+        HAL_Delay(1);
+    }
+    uint32_t avg_adc = sum / samples;
+    uint32_t v_adc = avg_adc * VREF_MV / ADC_MAX;
+    return (uint16_t)(v_adc * ADC_BATTERY_DIVIDER_NUM / ADC_BATTERY_DIVIDER_DENOM);
+}
+
+void display_battery_voltage(void)
+{
+    char msg[50];
+    uint16_t vbat = read_battery_mv_avg(16);  // 16-sample average
+    sprintf(msg, "Battery: %u.%02u V\r\n", vbat / 1000, vbat % 1000 / 10);
+    uart_print(msg);
+}
+
+
+
 void handle_click_sequence(uint8_t clicks)
 {
     char msg[100];
@@ -851,6 +913,9 @@ static void MX_ADC1_Init(void)
     sConfig.Rank = ADC_RANK_CHANNEL_NUMBER;
     if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK) { Error_Handler(); }
 }
+
+
+
 
 static void MX_SPI1_Init(void)
 {

@@ -1,5 +1,5 @@
 #MicroXplorer Configuration settings - do not modify
-ADC1.IPParameters=master,SelectedChannel,NbrOfConversionFlag
+ADC1.IPParameters=NbrOfConversionFlag,master,SelectedChannel
 ADC1.NbrOfConversionFlag=0
 ADC1.SelectedChannel=ADC_CHANNEL_8
 ADC1.master=1
@@ -127,7 +127,7 @@ ProjectManager.ToolChainLocation=
 ProjectManager.UAScriptAfterPath=
 ProjectManager.UAScriptBeforePath=
 ProjectManager.UnderRoot=true
-ProjectManager.functionlistsort=1-SystemClock_Config-RCC-false-HAL-false,2-MX_GPIO_Init-GPIO-false-HAL-true,3-MX_ADC1_Init-ADC1-false-HAL-true,4-MX_SPI1_Init-SPI1-false-HAL-true,5-MX_USART1_UART_Init-USART1-false-HAL-true,6-MX_USART2_UART_Init-USART2-false-HAL-true,7-MX_TIM1_Init-TIM1-false-HAL-true,8-MX_TIM3_Init-TIM3-false-HAL-true,0-MX_CORTEX_M0+_Init-CORTEX_M0+-false-HAL-true
+ProjectManager.functionlistsort=1-SystemClock_Config-RCC-false-HAL-false,2-MX_GPIO_Init-GPIO-false-HAL-true,3-MX_ADC1_Init-ADC1-false-HAL-true,4-MX_USART1_UART_Init-USART1-false-HAL-true,5-MX_TIM1_Init-TIM1-false-HAL-true,6-MX_TIM3_Init-TIM3-false-HAL-true,7-MX_SPI1_Init-SPI1-false-HAL-true,0-MX_CORTEX_M0+_Init-CORTEX_M0+-false-HAL-true
 RCC.ADCFreq_Value=48000000
 RCC.AHBFreq_Value=48000000
 RCC.APBFreq_Value=48000000
@@ -156,9 +156,8 @@ SH.S_TIM3_CH1.ConfNb=1
 SPI1.BaudRatePrescaler=SPI_BAUDRATEPRESCALER_8
 SPI1.CalculateBaudRate=6.0 MBits/s
 SPI1.Direction=SPI_DIRECTION_2LINES
-SPI1.IPParameters=VirtualType,Mode,Direction,CalculateBaudRate,VirtualNSS,BaudRatePrescaler
+SPI1.IPParameters=VirtualType,Mode,Direction,CalculateBaudRate,BaudRatePrescaler
 SPI1.Mode=SPI_MODE_MASTER
-SPI1.VirtualNSS=VM_NSSHARD
 SPI1.VirtualType=VM_MASTER
 TIM3.Channel-PWM\ Generation1\ CH1=TIM_CHANNEL_1
 TIM3.IPParameters=Channel-PWM Generation1 CH1,Period
