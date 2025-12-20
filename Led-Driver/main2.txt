@@ -8,6 +8,7 @@
 #include "main.h"
 #include <stdio.h>
 #include <string.h>
+#include <stdbool.h>
 
 /* Private variables */
 ADC_HandleTypeDef hadc1;
@@ -22,16 +23,6 @@ UART_HandleTypeDef huart1;
 #define NTC_SERIES_R  1478
 #define ADC_MAX       4095
 #define T0_KELVIN     298       // 25°C in Kelvin
-
-#define ADC_BATTERY_CHANNEL ADC_CHANNEL_9
-#define ADC_BATTERY_DIVIDER_NUM   20   // R1 + R2, e.g., 10k + 10k = 20
-#define ADC_BATTERY_DIVIDER_DENOM 10   // R2, e.g., 10k
-#define VREF_MV 3300                  // ADC reference in mV
-
-void display_battery_voltage(void);
-uint16_t read_battery_adc(void);
-uint16_t read_battery_mv(void);
-uint16_t read_battery_mv_avg(uint8_t samples);
 
 /* NTC Function Prototypes */
 int16_t read_ntc_temperature(void);
@@ -209,6 +200,22 @@ void neopixel_clear(void)
     neopixel_update();
 }
 
+typedef enum {
+    ADC_STATE_BATTERY = 0,
+    ADC_STATE_NTC
+} adc_state_t;
+
+#define ADC_READ_INTERVAL_MS   500
+#define ADC_READS_PER_STATE    10
+
+adc_state_t adc_state = ADC_STATE_NTC;   // 🔴 START WITH NTC
+uint8_t adc_read_count = 0;
+uint32_t last_adc_tick = 0;
+
+
+
+
+
 /* ============ Main Application ============ */
 
 int main(void)
@@ -271,9 +278,49 @@ int main(void)
     momentary_brightness = min_ramp_brightness;
 
     uint32_t last_temp_read = 0;
+    bool adc_NTC_stop = false;
+    bool adc_btry = true;
 
     while (1)
     {
+        if (HAL_GetTick() - last_adc_tick >= ADC_READ_INTERVAL_MS)
+        {
+            last_adc_tick = HAL_GetTick();
+
+            if (adc_state == ADC_STATE_NTC)
+            {
+                display_ntc_temperature();   // 🔥 NTC FIRST
+            }
+            else
+            {
+                display_btry_voltages();     // 🔋 Battery
+            }
+
+            adc_read_count++;
+
+            // Switch after N readings
+            if (adc_read_count >= ADC_READS_PER_STATE)
+            {
+                adc_read_count = 0;
+
+                if (adc_state == ADC_STATE_NTC)
+                {
+                    adc_state = ADC_STATE_BATTERY;
+                }
+                else
+                {
+                    adc_state = ADC_STATE_NTC;
+                }
+            }
+        }
+
+
+
+
+
+
+//    while (1)
+//    {
 //    	neopixel_clear();
 //    	uart_print("NeoPixel Test: RED...\r\n");
 //    	    neopixel_set_all(255, 0, 0);
@@ -294,13 +341,32 @@ int main(void)
 //    	    uart_print("NeoPixel Test: OFF\r\n");
 //    	    neopixel_clear();
 //    	    neopixel_set_all(current_red, current_green, current_blue);
+//    		if(adc_btry == true){
+//    	    if (HAL_GetTick() - last_temp_read > 500)  // Read every 2 seconds
+//    	      {
+//    	          display_ntc_temperature();
+//    	          last_temp_read = HAL_GetTick();
+//    	          for(int i = 0; i <20; i++){
+//    	        	  adc_NTC_stop = true;
+//    	        	  adc_btry = false;
+//    	          }
+//    	      }
+//    		}
+////    	    if(adc_NTC_stop == true){
+//    	    if (HAL_GetTick() - last_temp_read > 500)  // Read every 2 seconds
+//        	      {
+//    	    	display_btry_voltages();
+//        	          last_temp_read = HAL_GetTick();
+//        	          for(int i = 0; i <20; i++){
+//        	        	  adc_btry = true;
+//        	        	  adc_NTC_stop = false;
+//        	          }
+//        	      }
+//    	    }
 
-    	    if (HAL_GetTick() - last_temp_read > 500)  // Read every 2 seconds
-    	      {
-    	          display_ntc_temperature();
-    	          display_battery_voltage();
-    	          last_temp_read = HAL_GetTick();
-    	      }
+
+
+
 
 
 
@@ -491,6 +557,27 @@ int main(void)
     }
 }
 
+uint16_t ADC_Read_Channel(uint32_t channel)
+{
+
+    ADC_ChannelConfTypeDef sConfig = {0};
+    uint16_t value = 0;
+
+    sConfig.Channel = channel;
+    sConfig.Rank = ADC_RANK_CHANNEL_NUMBER;
+
+    HAL_ADC_ConfigChannel(&hadc1, &sConfig);
+
+    HAL_ADC_Start(&hadc1);
+    HAL_ADC_PollForConversion(&hadc1, HAL_MAX_DELAY);
+
+     value = HAL_ADC_GetValue(&hadc1);
+
+    HAL_ADC_Stop(&hadc1);
+
+    return value;
+}
+
 
 /**
  * @brief Read ADC value from NTC thermistor
@@ -498,19 +585,25 @@ int main(void)
  */
 uint16_t read_ntc_adc(void)
 {
+
+
+
+
     uint16_t adc_value = 0;
 
-    // Start ADC conversion
-    if (HAL_ADC_Start(&hadc1) == HAL_OK)
-    {
-        // Wait for conversion to complete
-        if (HAL_ADC_PollForConversion(&hadc1, 100) == HAL_OK)
-        {
-            // Read the ADC value
-            adc_value = HAL_ADC_GetValue(&hadc1);
-        }
-        HAL_ADC_Stop(&hadc1);
-    }
+    adc_value=ADC_Read_Channel(ADC_CHANNEL_8);
+
+//    // Start ADC conversion
+//    if (HAL_ADC_Start(&hadc1) == HAL_OK)
+//    {
+//        // Wait for conversion to complete
+//        if (HAL_ADC_PollForConversion(&hadc1, 100) == HAL_OK)
+//        {
+//            // Read the ADC value
+//            adc_value = HAL_ADC_GetValue(&hadc1);
+//        }
+//        HAL_ADC_Stop(&hadc1);
+//    }
 
     return adc_value;
 }
@@ -524,7 +617,6 @@ uint16_t read_ntc_adc_avg(void)
     }
     return (uint16_t)(sum >> 5);
 }
-
 
 /**
  * @brief Calculate NTC resistance from ADC value
@@ -566,7 +658,6 @@ static int32_t ilog_ln(uint32_t x)
     return result;
 }
 
-
 /**
  * @brief Calculate temperature from ADC value using Beta equation
  * @param adc_value: ADC reading (0-4095)
@@ -592,7 +683,6 @@ int16_t calculate_temperature(uint16_t adc)
     return (int16_t)(tempK - 273);
 }
 
-
 /**
  * @brief Read temperature from NTC thermistor
  * @return Temperature in Celsius (integer)
@@ -601,7 +691,6 @@ int16_t read_ntc_temperature(void)
 {
     return calculate_temperature(read_ntc_adc_avg());
 }
-
 
 /**
  * @brief Read and display NTC temperature via UART with resistance
@@ -621,7 +710,6 @@ void display_ntc_temperature(void)
     uart_print(msg);
 }
 
-
 /**
  * @brief Check if temperature is within safe operating range
  * @param max_temp_c: Maximum safe temperature in Celsius
@@ -640,58 +728,25 @@ uint8_t is_temperature_safe(int16_t max_temp_c)
 }
 
 
-uint16_t read_battery_adc(void)
+uint16_t read_btry_adc(void)
 {
-    ADC_ChannelConfTypeDef sConfig = {0};
-    uint16_t adc_value = 0;
+    uint16_t btry_value = 0;
 
-    sConfig.Channel = ADC_BATTERY_CHANNEL;
-    sConfig.Rank = ADC_RANK_CHANNEL_NUMBER;
-    if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK) { Error_Handler(); }
+    btry_value=ADC_Read_Channel(ADC_CHANNEL_1);
 
-    if (HAL_ADC_Start(&hadc1) == HAL_OK)
-    {
-        if (HAL_ADC_PollForConversion(&hadc1, 100) == HAL_OK)
-        {
-            adc_value = HAL_ADC_GetValue(&hadc1);
-        }
-        HAL_ADC_Stop(&hadc1);
-    }
-
-    return adc_value;
+    return btry_value;
 }
 
-
-uint16_t read_battery_mv(void)
+void display_btry_voltages(void)
 {
-    uint16_t adc = read_battery_adc();
-    uint32_t v_adc = (uint32_t)adc * VREF_MV / ADC_MAX;          // mV at ADC pin
-    uint32_t v_bat = v_adc * ADC_BATTERY_DIVIDER_NUM / ADC_BATTERY_DIVIDER_DENOM;
-    return (uint16_t)v_bat;  // battery voltage in mV
+    char msgg[80];
+    uint16_t adc_btry = read_btry_adc();
+    sprintf(msgg,
+        "NTC ADC:%u ,",
+        adc_btry);
+
+    uart_print(msgg);
 }
-
-uint16_t read_battery_mv_avg(uint8_t samples)
-{
-    uint32_t sum = 0;
-    for (uint8_t i = 0; i < samples; i++)
-    {
-        sum += read_battery_adc();
-        HAL_Delay(1);
-    }
-    uint32_t avg_adc = sum / samples;
-    uint32_t v_adc = avg_adc * VREF_MV / ADC_MAX;
-    return (uint16_t)(v_adc * ADC_BATTERY_DIVIDER_NUM / ADC_BATTERY_DIVIDER_DENOM);
-}
-
-void display_battery_voltage(void)
-{
-    char msg[50];
-    uint16_t vbat = read_battery_mv_avg(16);  // 16-sample average
-    sprintf(msg, "Battery: %u.%02u V\r\n", vbat / 1000, vbat % 1000 / 10);
-    uart_print(msg);
-}
-
-
 
 void handle_click_sequence(uint8_t clicks)
 {
@@ -889,32 +944,67 @@ static void MX_GPIO_Init(void)
 
 static void MX_ADC1_Init(void)
 {
-    ADC_ChannelConfTypeDef sConfig = {0};
-    hadc1.Instance = ADC1;
-    hadc1.Init.ClockPrescaler = ADC_CLOCK_SYNC_PCLK_DIV2;
-    hadc1.Init.Resolution = ADC_RESOLUTION_12B;
-    hadc1.Init.DataAlign = ADC_DATAALIGN_RIGHT;
-    hadc1.Init.ScanConvMode = ADC_SCAN_SEQ_FIXED;
-    hadc1.Init.EOCSelection = ADC_EOC_SINGLE_CONV;
-    hadc1.Init.LowPowerAutoWait = DISABLE;
-    hadc1.Init.LowPowerAutoPowerOff = DISABLE;
-    hadc1.Init.ContinuousConvMode = DISABLE;
-    hadc1.Init.NbrOfConversion = 1;
-    hadc1.Init.DiscontinuousConvMode = DISABLE;
-    hadc1.Init.ExternalTrigConv = ADC_SOFTWARE_START;
-    hadc1.Init.ExternalTrigConvEdge = ADC_EXTERNALTRIGCONVEDGE_NONE;
-    hadc1.Init.DMAContinuousRequests = DISABLE;
-    hadc1.Init.Overrun = ADC_OVR_DATA_PRESERVED;
-    hadc1.Init.SamplingTimeCommon1 = ADC_SAMPLETIME_1CYCLE_5;
-    hadc1.Init.OversamplingMode = DISABLE;
-    hadc1.Init.TriggerFrequencyMode = ADC_TRIGGER_FREQ_HIGH;
-    if (HAL_ADC_Init(&hadc1) != HAL_OK) { Error_Handler(); }
-    sConfig.Channel = ADC_CHANNEL_8;
-    sConfig.Rank = ADC_RANK_CHANNEL_NUMBER;
-    if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK) { Error_Handler(); }
+
+  /* USER CODE BEGIN ADC1_Init 0 */
+
+  /* USER CODE END ADC1_Init 0 */
+
+  ADC_ChannelConfTypeDef sConfig = {0};
+
+  /* USER CODE BEGIN ADC1_Init 1 */
+
+  /* USER CODE END ADC1_Init 1 */
+
+  /** Configure the global features of the ADC (Clock, Resolution, Data Alignment and number of conversion)
+  */
+  hadc1.Instance = ADC1;
+  hadc1.Init.ClockPrescaler = ADC_CLOCK_SYNC_PCLK_DIV2;
+  hadc1.Init.Resolution = ADC_RESOLUTION_12B;
+  hadc1.Init.DataAlign = ADC_DATAALIGN_RIGHT;
+  hadc1.Init.ScanConvMode = ADC_SCAN_ENABLE;
+  hadc1.Init.EOCSelection = ADC_EOC_SINGLE_CONV;
+  hadc1.Init.LowPowerAutoWait = DISABLE;
+  hadc1.Init.LowPowerAutoPowerOff = DISABLE;
+  hadc1.Init.ContinuousConvMode = DISABLE;
+  hadc1.Init.NbrOfConversion = 2;
+  hadc1.Init.DiscontinuousConvMode = ENABLE;
+  hadc1.Init.ExternalTrigConv = ADC_SOFTWARE_START;
+  hadc1.Init.ExternalTrigConvEdge = ADC_EXTERNALTRIGCONVEDGE_NONE;
+  hadc1.Init.DMAContinuousRequests = DISABLE;
+  hadc1.Init.Overrun = ADC_OVR_DATA_PRESERVED;
+  hadc1.Init.SamplingTimeCommon1 = ADC_SAMPLETIME_19CYCLES_5;
+  hadc1.Init.SamplingTimeCommon2 = ADC_SAMPLETIME_12CYCLES_5;
+  hadc1.Init.OversamplingMode = DISABLE;
+  hadc1.Init.TriggerFrequencyMode = ADC_TRIGGER_FREQ_HIGH;
+  if (HAL_ADC_Init(&hadc1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /** Configure Regular Channel
+  */
+  sConfig.Channel = ADC_CHANNEL_1;
+  sConfig.Rank = ADC_REGULAR_RANK_1;
+  sConfig.SamplingTime = ADC_SAMPLINGTIME_COMMON_1;
+  if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /** Configure Regular Channel
+  */
+  sConfig.Channel = ADC_CHANNEL_8;
+  sConfig.Rank = ADC_REGULAR_RANK_2;
+  sConfig.SamplingTime = ADC_SAMPLINGTIME_COMMON_2;
+  if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN ADC1_Init 2 */
+
+  /* USER CODE END ADC1_Init 2 */
+
 }
-
-
 
 
 static void MX_SPI1_Init(void)
